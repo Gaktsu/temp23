@@ -297,37 +297,6 @@ def _upload_video(
         )
 
 
-def _create_event_folder(
-    save_dir: str,
-    timestamp: float,
-    sensor_data: Optional[Dict[str, Any]]
-) -> str:
-    """
-    이벤트별 폴더 생성
-    
-    Args:
-        save_dir: 기본 저장 디렉토리
-        timestamp: 이벤트 시작 타임스탬프
-        sensor_data: 센서 데이터
-    
-    Returns:
-        생성된 폴더 경로
-    """
-    time_tag = epoch_to_tag(timestamp)
-    gps_tag = _format_gps_tag(sensor_data)
-    folder_name = f"event_{time_tag}_{gps_tag}"
-    folder_path = os.path.join(save_dir, folder_name)
-    
-    os.makedirs(folder_path, exist_ok=True)
-    logger.event_info(
-        EventType.MODULE_START,
-        "이벤트 폴더 생성",
-        {"path": folder_path}
-    )
-    
-    return folder_path
-
-
 def _cleanup_old_folders(
     parent_dir: str,
     max_folders: int,
@@ -404,7 +373,7 @@ def _create_writer(
             {"cam_id": cam_id, "fps": fps, "fps_int": fps_int, "codec": codec, "frame_size": (w, h), "event_folder": event_folder}
         )
 
-        file_path = _build_event_filename(save_dir, cam_id, timestamp, sensor_data, event_folder)
+        file_path = _build_event_filename(save_dir, cam_id, timestamp, event_folder)
 
         # X264 코덱 요청 시 확장자를 .mp4 로 교체 (GStreamer 직접 저장)
         if codec == "X264":
@@ -463,7 +432,6 @@ def _build_event_filename(
     save_dir: str,
     cam_id: int,
     event_ts: float,
-    sensor_data: Optional[Dict[str, Any]],
     event_folder: Optional[str] = None
 ) -> str:
     """
@@ -473,7 +441,6 @@ def _build_event_filename(
         save_dir: 기본 저장 디렉토리
         cam_id: 카메라 ID
         event_ts: 이벤트 타임스탬프
-        sensor_data: 센서 데이터
         event_folder: 이벤트 폴더 경로 (있으면 해당 폴더에 저장)
     
     Returns:
@@ -482,73 +449,3 @@ def _build_event_filename(
     time_tag = epoch_to_tag(event_ts)
     filename = f"{time_tag} No.{cam_id}.avi"
     return os.path.join(save_dir, filename)
-
-
-def _format_gps_tag(sensor_data: Optional[Dict[str, Any]]) -> str:
-    if not sensor_data:
-        return "gps_unknown"
-    gps_data = sensor_data.get("gps")
-    if not gps_data:
-        return "gps_unknown"
-
-    raw = gps_data.get("data") if isinstance(gps_data, dict) else None
-    if not isinstance(raw, str):
-        return "gps_unknown"
-
-    coords = _parse_nmea_lat_lon(raw)
-    if coords is None:
-        return "gps_unknown"
-
-    lat, lon = coords
-    tag = f"lat{lat:.6f}_lon{lon:.6f}"
-    return _sanitize_tag(tag)
-
-
-def _parse_nmea_lat_lon(sentence: str) -> Optional[Tuple[float, float]]:
-    if not sentence or not sentence.startswith("$"):
-        return None
-
-    parts = sentence.split(",")
-    if not parts:
-        return None
-
-    msg = parts[0]
-    if msg in {"$GPRMC", "$GNRMC"}:
-        if len(parts) < 7 or parts[2] != "A":
-            return None
-        lat_raw, ns = parts[3], parts[4]
-        lon_raw, ew = parts[5], parts[6]
-    elif msg in {"$GPGGA", "$GNGGA"}:
-        if len(parts) < 6 or parts[6] == "0":
-            return None
-        lat_raw, ns = parts[2], parts[3]
-        lon_raw, ew = parts[4], parts[5]
-    else:
-        return None
-
-    lat = _nmea_to_decimal(lat_raw, ns, is_lat=True)
-    lon = _nmea_to_decimal(lon_raw, ew, is_lat=False)
-    if lat is None or lon is None:
-        return None
-    return lat, lon
-
-
-def _nmea_to_decimal(value: str, hemi: str, is_lat: bool) -> Optional[float]:
-    if not value or not hemi:
-        return None
-
-    try:
-        degrees_len = 2 if is_lat else 3
-        degrees = float(value[:degrees_len])
-        minutes = float(value[degrees_len:])
-    except ValueError:
-        return None
-
-    decimal = degrees + (minutes / 60.0)
-    if hemi.upper() in {"S", "W"}:
-        decimal = -decimal
-    return decimal
-
-
-def _sanitize_tag(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)

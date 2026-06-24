@@ -94,7 +94,7 @@ def get_upload_status_snapshot() -> dict:
 
 def _extract_date(file_path: str) -> str:
     """Extract YYYY-MM-DD from event folder if possible; fallback to current date."""
-    # Example folder: event_20260326_110530_gps_unknown
+    # Example folder: event_20260326_110530
     base = os.path.normpath(file_path)
     parts = base.split(os.sep)
     for part in parts:

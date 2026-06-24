@@ -45,7 +45,6 @@ from config.settings import (
 )
 from hardware.buzzer import Buzzer
 from hardware.camera import CameraCapture, init_cameras
-from hardware.gps import GPS
 from hardware.imu import IMU
 from pipeline.capture import start_capture_threads
 from pipeline.inference import start_inference_thread
@@ -78,14 +77,12 @@ def _start_watchdog_timer() -> None:
 
 
 
-def _build_sensor_getter(gps_buffer: SensorBuffer, imu_buffer: SensorBuffer):
-    """GPS/IMU 최신 데이터를 시각 기준으로 묶어 반환하는 getter 클로저 생성"""
+def _build_sensor_getter(imu_buffer: SensorBuffer):
+    """IMU 최신 데이터를 시각 기준으로 묶어 반환하는 getter 클로저 생성"""
     def get_sensor_snapshot(timestamp: float) -> dict:
-        gps_sample = gps_buffer.get_latest()
         imu_sample = imu_buffer.get_latest()
         return {
             "timestamp": timestamp,
-            "gps": {"ts": gps_sample[0], "data": gps_sample[1]} if gps_sample else None,
             "imu": {"ts": imu_sample[0], "data": imu_sample[1]} if imu_sample else None,
         }
     return get_sensor_snapshot
@@ -374,7 +371,6 @@ def _cleanup(
     save_stop_event: threading.Event,
     inference_stop_event: threading.Event,
     sensor_stop_event: threading.Event,
-    gps: GPS,
     imu: IMU,
     buzzer: Buzzer,
     heartbeat_writer=None,
@@ -422,7 +418,6 @@ def _cleanup(
     for i, camera in enumerate(cameras):
         camera.release()
         logger.event_info(EventType.CAMERA_CLOSE, f"카메라 {i} 리소스 해제")
-    gps.stop()
     imu.stop()
     logger.event_info(EventType.SYSTEM_STOP, "Person Detection System 종료 완료")
     try:
@@ -443,7 +438,7 @@ def main():
         1. 모델 로드
         2. 카메라 초기화
         3. 공유 자원 준비
-        4. 스레드 시작 (캡처 / 추론 / GPS / IMU / 저장)
+        4. 스레드 시작 (캡처 / 추론 / IMU / 저장)
         5. 부저 초기화
         6. 메인 표시 루프 (프레임 획득 → 시각화 → 키 입력)
         7. 정리 (스레드 종료, 리소스 해제)
@@ -488,16 +483,15 @@ def main():
     state_map    = {cam_id: state for cam_id, state in zip(CAMERA_INDICES, states)}
     fps_counters = {cam_id: FPSCounter() for cam_id in CAMERA_INDICES}
 
-    gps_buffer = SensorBuffer(maxlen=1)
     imu_buffer = SensorBuffer(maxlen=1)
-    get_sensor_snapshot = _build_sensor_getter(gps_buffer, imu_buffer)
+    get_sensor_snapshot = _build_sensor_getter(imu_buffer)
 
     # 4. 스레드 시작
-    gps, imu = GPS(), IMU()
+    imu = IMU()
     threads: List[threading.Thread] = (
         start_capture_threads(cameras, states, fps_map, save_queue)
         + start_inference_thread(models, states, get_sensor_snapshot, inference_stop_event)
-        + start_sensor_threads(gps, imu, sensor_stop_event, gps_buffer, imu_buffer)
+        + start_sensor_threads(imu, sensor_stop_event, imu_buffer)
         + [start_save_thread(save_queue, save_stop_event, fps_map, get_sensor_snapshot, state_map)]
         + [start_event_upload_worker([s.event_queue for s in states], inference_stop_event)]
     )
@@ -560,7 +554,7 @@ def main():
         cleanup_thread = threading.Thread(
             target=_cleanup,
             args=(cameras, states, threads, save_stop_event,
-                  inference_stop_event, sensor_stop_event, gps, imu, buzzer,
+                  inference_stop_event, sensor_stop_event, imu, buzzer,
                   heartbeat_writer),
             daemon=False,
             name="cleanup_main",
