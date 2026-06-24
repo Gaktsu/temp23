@@ -1,6 +1,6 @@
 {
-  "last_update": "2026-06-24T17:34:36",
-  "last_update_epoch": 1782290076.2993515,
+  "last_update": "2026-06-25T00:43:00",
+  "last_update_epoch": 1782315780.5349705,
   "status": "running",
   "camera": {
     "0": {
@@ -8,14 +8,18 @@
       "running": true,
       "open": true,
       "status": "ok",
-      "frame_seq": 59444,
-      "last_frame_ts": "2026-06-24T17:34:36",
-      "frame_age_sec": 0.013,
-      "last_detection_ts": "2026-06-24T17:33:57",
-      "detection_age_sec": 38.655,
-      "last_inference_ts": "2026-06-24T17:33:57",
-      "inference_age_sec": 38.655,
-      "last_intrusion_ts": "2026-06-24T17:33:13",
+      "frame_seq": 745,
+      "last_frame_ts": "2026-06-25T00:43:00",
+      "frame_age_sec": 0.025,
+      "last_frame_age": 0.025,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T00:42:32",
+      "detection_age_sec": 27.65,
+      "last_inference_ts": "2026-06-25T00:42:32",
+      "inference_age_sec": 27.65,
+      "last_intrusion_ts": null,
       "intrusion": false,
       "last_warning_level": "SAFE",
       "forklift_speed": 0
@@ -25,94 +29,52 @@
       "running": true,
       "open": true,
       "status": "ok",
-      "frame_seq": 59454,
-      "last_frame_ts": "2026-06-24T17:34:36",
-      "frame_age_sec": 0.018,
-      "last_detection_ts": "2026-06-24T17:33:57",
-      "detection_age_sec": 38.585,
-      "last_inference_ts": "2026-06-24T17:33:57",
-      "inference_age_sec": 38.585,
-      "last_intrusion_ts": "2026-06-24T17:19:36",
-      "intrusion": false,
-      "last_warning_level": "SAFE",
-      "forklift_speed": 0
-    },
-    "3": {
-      "camera_index": 3,
-      "running": true,
-      "open": true,
-      "status": "ok",
-      "frame_seq": 37469,
-      "last_frame_ts": "2026-06-24T17:34:36",
-      "frame_age_sec": 0.002,
-      "last_detection_ts": "2026-06-24T17:33:57",
-      "detection_age_sec": 38.737,
-      "last_inference_ts": "2026-06-24T17:33:57",
-      "inference_age_sec": 38.737,
-      "last_intrusion_ts": "2026-06-24T17:33:23",
-      "intrusion": false,
-      "last_warning_level": "SAFE",
-      "forklift_speed": 0
-    },
-    "7": {
-      "camera_index": 7,
-      "running": true,
-      "open": true,
-      "status": "ok",
-      "frame_seq": 37535,
-      "last_frame_ts": "2026-06-24T17:34:36",
+      "frame_seq": 1261,
+      "last_frame_ts": "2026-06-25T00:43:00",
       "frame_age_sec": 0.01,
-      "last_detection_ts": "2026-06-24T17:33:57",
-      "detection_age_sec": 38.677,
-      "last_inference_ts": "2026-06-24T17:33:57",
-      "inference_age_sec": 38.677,
-      "last_intrusion_ts": "2026-06-24T17:15:11",
+      "last_frame_age": 0.01,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T00:42:32",
+      "detection_age_sec": 27.739,
+      "last_inference_ts": "2026-06-25T00:42:32",
+      "inference_age_sec": 27.739,
+      "last_intrusion_ts": "2026-06-25T00:42:27",
       "intrusion": false,
       "last_warning_level": "SAFE",
       "forklift_speed": 0
     }
   },
   "ai": {
-    "last_update": "2026-06-24T17:33:57",
-    "last_update_epoch": 1782290037.714854,
+    "last_update": "2026-06-25T00:42:32",
+    "last_update_epoch": 1782315752.8846695,
     "per_camera": {
       "0": {
-        "last_inference_ts": "2026-06-24T17:33:57",
-        "last_detection_ts": "2026-06-24T17:33:57",
-        "inference_age_sec": 38.655
+        "last_inference_ts": "2026-06-25T00:42:32",
+        "last_detection_ts": "2026-06-25T00:42:32",
+        "inference_age_sec": 27.65
       },
       "2": {
-        "last_inference_ts": "2026-06-24T17:33:57",
-        "last_detection_ts": "2026-06-24T17:33:57",
-        "inference_age_sec": 38.584
-      },
-      "3": {
-        "last_inference_ts": "2026-06-24T17:33:57",
-        "last_detection_ts": "2026-06-24T17:33:57",
-        "inference_age_sec": 38.736
-      },
-      "7": {
-        "last_inference_ts": "2026-06-24T17:33:57",
-        "last_detection_ts": "2026-06-24T17:33:57",
-        "inference_age_sec": 38.677
+        "last_inference_ts": "2026-06-25T00:42:32",
+        "last_detection_ts": "2026-06-25T00:42:32",
+        "inference_age_sec": 27.739
       }
     }
   },
   "upload_queue": {
-    "video_queue_size": 512,
+    "video_queue_size": 331,
     "event_queue_sizes": {
       "0": 0,
-      "2": 0,
-      "3": 0,
-      "7": 0
+      "2": 0
     },
     "event_queue_total": 0,
-    "active_uploads": 4,
-    "completed_uploads": 8,
-    "failed_uploads": 60,
-    "last_failure_count": 3,
-    "last_failure_reason": "curl: (28) Connection timed out after 120000 milliseconds\n",
-    "last_failure_file": "/home/jetson/Desktop/integrated/Jetson-Integrated/jetson-main/jetson-main/SaveVideos/20260624_172445 No.7.mp4",
-    "last_failure_ts": "2026-06-24T17:31:53.378385"
+    "active_uploads": 1,
+    "completed_uploads": 1,
+    "failed_uploads": 0,
+    "last_failure_count": 0,
+    "last_failure_reason": null,
+    "last_failure_file": null,
+    "last_failure_ts": null
   }
 }

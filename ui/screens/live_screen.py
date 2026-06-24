@@ -54,7 +54,7 @@ class LiveScreen(QWidget):
         self.alert_bar.setGeometry(0, 0, 800, 50)
         self.alert_bar.setAlignment(Qt.AlignCenter)
         self.alert_bar.setStyleSheet(
-            "background-color: #003300; color: #00ff00; "
+            "background-color: #111111; color: #bbbbbb; "
             "font-size: 18px; font-weight: bold;"
         )
 
@@ -280,6 +280,8 @@ class LiveScreen(QWidget):
             with state.detection_lock:
                 wl  = state.last_warning_level
                 spd = getattr(state, 'forklift_speed', 0) or 0
+            if not state.is_intruding():
+                wl = WarningLevel.SAFE
             if wl is not None and wl in _order:
                 if _order.index(wl) > _order.index(max_level):
                     max_level = wl
@@ -287,10 +289,10 @@ class LiveScreen(QWidget):
                 max_speed = spd
 
         if max_level == WarningLevel.SAFE:
-            color, bg = "#00ff00", "#003300"
+            color, bg = "#bbbbbb", "#111111"
             msg = f"SAFE  |  Speed: {max_speed}/5"
         elif max_level == WarningLevel.BLIND_SPOT:
-            color, bg = "#ffff00", "#333300"
+            color, bg = "#bbbbbb", "#111111"
             msg = f"CAUTION: BLIND SPOT  |  Speed: {max_speed}/5"
         elif max_level == WarningLevel.APPROACH:
             color, bg = "#ffa500", "#332200"

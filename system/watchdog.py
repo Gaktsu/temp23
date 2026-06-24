@@ -57,6 +57,7 @@ class Watchdog:
         self._logger = self._configure_logger()
         self._stop_requested = False
         self._launch_count = 0
+        self._current_process: Optional[subprocess.Popen] = None
 
     def _configure_logger(self) -> logging.Logger:
         os.makedirs(os.path.dirname(WATCHDOG_LOG_PATH), exist_ok=True)
@@ -241,6 +242,7 @@ class Watchdog:
         return "stop"
 
     def run(self) -> None:
+        self._install_signal_handlers()
         self._log(
             logging.INFO,
             "Watchdog 시작",
@@ -254,6 +256,7 @@ class Watchdog:
 
         while not self._stop_requested:
             process = self._launch_main()
+            self._current_process = process
             runtime_start = time.time()
             outcome = self._monitor_process(process, runtime_start)
 
@@ -269,12 +272,28 @@ class Watchdog:
                 "메인 프로세스 재시작 대기",
                 {"restart_delay_sec": self.restart_delay_sec},
             )
-            time.sleep(self.restart_delay_sec)
+            deadline = time.time() + self.restart_delay_sec
+            while not self._stop_requested and time.time() < deadline:
+                time.sleep(0.2)
 
         self._log(logging.INFO, "Watchdog 종료")
 
     def stop(self) -> None:
         self._stop_requested = True
+
+    def _install_signal_handlers(self) -> None:
+        def _handle_signal(signum, _frame) -> None:
+            self._log(logging.INFO, "Watchdog 종료 신호 수신", {"signal": signum})
+            self._stop_requested = True
+            process = self._current_process
+            if process is not None and process.poll() is None:
+                self._terminate_process(process, f"signal {signum}")
+
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(signum, _handle_signal)
+            except Exception as exc:
+                self._log(logging.WARNING, "signal handler 등록 실패", {"signal": signum, "error": str(exc)})
 
 
 if __name__ == "__main__":

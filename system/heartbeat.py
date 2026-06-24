@@ -127,8 +127,10 @@ class HeartbeatWriter:
             last_inference_ts = state.last_inference_ts
             last_intrusion_ts = state.last_intrusion_ts
             last_warning_level = getattr(state.last_warning_level, "value", str(state.last_warning_level))
-            intrusion = state.last_intrusion
             forklift_speed = state.forklift_speed
+        intrusion = state.is_intruding()
+        if not intrusion:
+            last_warning_level = "SAFE"
 
         frame_age_sec = round(now_epoch - last_frame_ts, 3) if last_frame_ts else None
         inference_age_sec = round(now_epoch - last_inference_ts, 3) if last_inference_ts else None
@@ -148,6 +150,10 @@ class HeartbeatWriter:
             "frame_seq": frame_seq,
             "last_frame_ts": _iso_from_epoch(last_frame_ts),
             "frame_age_sec": frame_age_sec,
+            "last_frame_age": frame_age_sec,
+            "reconnect_attempts": int(getattr(camera, "reconnect_attempts", 0)),
+            "last_reconnect_result": getattr(camera, "last_reconnect_result", "unknown"),
+            "last_reconnect_ts": _iso_from_epoch(float(getattr(camera, "last_reconnect_ts", 0.0) or 0.0)),
             "last_detection_ts": _iso_from_epoch(last_detection_ts),
             "detection_age_sec": detection_age_sec,
             "last_inference_ts": _iso_from_epoch(last_inference_ts),

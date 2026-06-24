@@ -6,12 +6,14 @@ from __future__ import annotations
 import cv2
 import queue
 import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.logger import get_logger
 from ai.detector import Detection, WarningLevel
+from config.settings import DETECTION_STALE_SEC
 
 logger = get_logger("pipeline.shared_state")
 
@@ -142,11 +144,13 @@ class SharedState:
         with self.frame_lock:
             frame = self.latest_frame.copy() if self.latest_frame is not None else None
         with self.detection_lock:
+            intrusion = self._intrusion_is_current_locked(time.time())
+            warning_level = self.last_warning_level if intrusion else WarningLevel.SAFE
             return CameraStateSnapshot(
                 frame=frame,
                 detections=list(self.last_detections),
-                intrusion=self.last_intrusion,
-                warning_level=self.last_warning_level,
+                intrusion=intrusion,
+                warning_level=warning_level,
                 last_intrusion_ts=self.last_intrusion_ts,
                 capture_ms=self.capture_ms,
                 inference_ms=self.inference_ms,
@@ -157,5 +161,14 @@ class SharedState:
     def is_intruding(self) -> bool:
         """현재 침입 상태를 스레드 안전하게 반환합니다."""
         with self.detection_lock:
-            return self.last_intrusion
+            return self._intrusion_is_current_locked(time.time())
 
+    def _intrusion_is_current_locked(self, now: float) -> bool:
+        """detection_lock 보유 상태에서 stale 침입 상태를 걸러냅니다."""
+        if not self.last_intrusion:
+            return False
+        if DETECTION_STALE_SEC <= 0:
+            return True
+        if self.last_detection_ts <= 0:
+            return False
+        return now - self.last_detection_ts <= DETECTION_STALE_SEC

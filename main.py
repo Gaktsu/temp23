@@ -3,6 +3,7 @@
 """
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -22,13 +23,14 @@ bootstrap_heartbeat(
 import cv2
 import numpy as np
 from PyQt5.QtWidgets import QApplication
-from ai.detector import load_roi_polygon
+from ai.detector import WarningLevel, load_roi_polygon
 from ai.model import load_model
 from config import roi_setup as _roi_setup_mod
 from config.roi_manager import roi_config_path
 from config.settings import (
     CAMERA_HEALTH_CHECK_INTERVAL_SEC,
     CAMERA_INDICES,
+    CAMERA_RECONNECT_MAX_RETRIES,
     CAMERA_STALE_THRESHOLD_SEC,
     CAMERA_DEFAULT_WIDTH, CAMERA_DEFAULT_HEIGHT,
     CAMERA_OUTPUT_WIDTH, CAMERA_OUTPUT_HEIGHT,
@@ -96,6 +98,7 @@ def _start_camera_health_monitor(
 ) -> threading.Thread:
     """프레임이 장시간 멈춘 카메라를 재연결하는 보조 감시 스레드."""
     last_reconnect_attempt: Dict[int, float] = {cam_id: 0.0 for cam_id in CAMERA_INDICES}
+    monitor_start = time.time()
 
     def _monitor() -> None:
         while not stop_event.is_set():
@@ -106,11 +109,13 @@ def _start_camera_health_monitor(
                     last_frame_ts = state.latest_frame_ts
 
                 if last_frame_ts <= 0.0:
-                    continue
-
-                frame_age_sec = now - last_frame_ts
-                if frame_age_sec < CAMERA_STALE_THRESHOLD_SEC:
-                    continue
+                    frame_age_sec = now - monitor_start
+                    if frame_age_sec < CAMERA_STALE_THRESHOLD_SEC:
+                        continue
+                else:
+                    frame_age_sec = now - last_frame_ts
+                    if frame_age_sec < CAMERA_STALE_THRESHOLD_SEC:
+                        continue
 
                 if now - last_reconnect_attempt.get(cam_id, 0.0) < CAMERA_HEALTH_CHECK_INTERVAL_SEC:
                     continue
@@ -123,10 +128,13 @@ def _start_camera_health_monitor(
                         "camera_index": cam_id,
                         "frame_age_sec": round(frame_age_sec, 2),
                         "threshold_sec": CAMERA_STALE_THRESHOLD_SEC,
+                        "last_frame_seen": last_frame_ts > 0.0,
+                        "reconnect_attempts": getattr(camera, "reconnect_attempts", 0),
+                        "last_reconnect_result": getattr(camera, "last_reconnect_result", "unknown"),
                     },
                 )
 
-                if camera.reconnect(max_retries=3, retry_delay=2.0):
+                if camera.reconnect(max_retries=CAMERA_RECONNECT_MAX_RETRIES, retry_delay=2.0):
                     logger.event_info(
                         EventType.CAMERA_OPEN,
                         "카메라 프레임 복구 성공",
@@ -161,8 +169,8 @@ def _get_current_frame(states: List[SharedState], cam_idx: int):
         frame = state.latest_frame.copy() if state.latest_frame is not None else None
     with state.detection_lock:
         detections = list(state.last_detections)
-        intrusion = state.last_intrusion
         last_intrusion_ts = state.last_intrusion_ts
+    intrusion = state.is_intruding()
     return frame, seq, detections, intrusion, last_intrusion_ts
 
 
@@ -182,8 +190,8 @@ def _determine_saving_global(states: List[SharedState]) -> bool:
     now = time.time()
     for state in states:
         with state.detection_lock:
-            intrusion = state.last_intrusion
             last_ts   = state.last_intrusion_ts
+        intrusion = state.is_intruding()
         if intrusion:
             return True
         if last_ts > 0 and (now - last_ts) <= EVENT_RECORD_POST_SEC:
@@ -286,8 +294,10 @@ def _read_camera_state_snapshot(state: SharedState):
         frame = state.latest_frame.copy() if state.latest_frame is not None else None
     with state.detection_lock:
         detections = list(state.last_detections)
-        intrusion  = state.last_intrusion
         warning_level = state.last_warning_level
+    intrusion = state.is_intruding()
+    if not intrusion:
+        warning_level = WarningLevel.SAFE
     return frame, detections, intrusion, warning_level
 
 
@@ -309,14 +319,14 @@ def _render_camera_panel(
         fps,
         saving,
         cam_id,
-        intrusion=state.last_intrusion,
+        intrusion=state.is_intruding(),
         capture_ms=state.capture_ms,
         inference_ms=state.inference_ms,
         postprocess_ms=state.postprocess_ms,
         draw_ms=draw_ms,
         roi_polygon=roi_polygons.get(cam_id) if roi_polygons else None,
         forklift_speed=state.forklift_speed,
-        warning_level=state.last_warning_level,
+        warning_level=state.last_warning_level if state.is_intruding() else WarningLevel.SAFE,
     )
     return panel, (time.perf_counter() - t0) * 1000
 
@@ -385,7 +395,13 @@ def _cleanup(
     logger.debug("save_worker 종료 대기 중 (고정 post 녹화 + 변환 + 업로드)")
     for t in threads:
         if t.name == "save_worker":
-            t.join()
+            t.join(timeout=EVENT_RECORD_POST_SEC + 60.0)
+            if t.is_alive():
+                logger.event_warning(
+                    EventType.MODULE_STOP,
+                    "save_worker 종료 대기 시간 초과",
+                    {"timeout_sec": EVENT_RECORD_POST_SEC + 60.0},
+                )
             break
 
     # 업로드 완료 후 heartbeat 중단 — 먼저 멈추면 watchdog이 업로드 중 프로세스를 강제 종료함
@@ -504,6 +520,16 @@ def main():
     try:
         app = QApplication(sys.argv)
         window = MainApp(shared_states=states, buzzer=buzzer)
+        def _request_shutdown(signum, _frame) -> None:
+            logger.event_warning(EventType.USER_INPUT, "종료 신호 감지", {"signal": signum})
+            runtime_stop_event.set()
+            app.quit()
+
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(signum, _request_shutdown)
+            except Exception:
+                pass
         window.show()
         app.exec_()
     except KeyboardInterrupt:
@@ -548,10 +574,16 @@ def _launch_watchdog_and_wait() -> int:
     env = os.environ.copy()
     env[MAIN_SUPERVISED_ENV] = "1"
 
+    popen_kwargs = {
+        "env": env,
+        "cwd": PROJECT_ROOT,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+
     watchdog_process = subprocess.Popen(
         [sys.executable, WATCHDOG_SCRIPT_PATH],
-        env=env,
-        cwd=PROJECT_ROOT,
+        **popen_kwargs,
     )
 
     logger.event_info(
@@ -564,18 +596,45 @@ def _launch_watchdog_and_wait() -> int:
         return watchdog_process.wait()
     except KeyboardInterrupt:
         logger.event_warning(EventType.USER_INPUT, "런처 종료 신호 감지")
-        try:
-            watchdog_process.terminate()
-            watchdog_process.wait(timeout=5)
-        except Exception:
-            watchdog_process.kill()
+        _terminate_process_group(watchdog_process, "launcher keyboard interrupt")
         return 130
     finally:
         if watchdog_process.poll() is None:
-            try:
-                watchdog_process.terminate()
-            except Exception:
-                pass
+            _terminate_process_group(watchdog_process, "launcher shutdown")
+
+
+def _terminate_process_group(process: subprocess.Popen, reason: str, timeout: float = 5.0) -> None:
+    """Terminate a subprocess and its child process group/session."""
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except Exception as exc:
+        logger.event_warning(
+            EventType.MODULE_STOP,
+            "프로세스 그룹 SIGTERM 전송 실패",
+            {"reason": reason, "pid": process.pid, "error": str(exc)},
+        )
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except Exception as exc:
+            logger.event_error(
+                EventType.ERROR_OCCURRED,
+                "프로세스 그룹 SIGKILL 전송 실패",
+                {"reason": reason, "pid": process.pid, "error": str(exc)},
+            )
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from config.settings import (
     SAVE_CLEANUP_THRESHOLD_PERCENT,
     SAVE_DIR,
 )
+from ai.detector import WarningLevel
 from utils.logger import get_logger, EventType
 from pipeline.shared_state import SharedState
 from pipeline.recorder_utils import (
@@ -227,8 +228,8 @@ def save_loop(
                 now = time.time()
                 for check_cam_id in state_map.keys():
                     with state_map[check_cam_id].detection_lock:
-                        _intr = state_map[check_cam_id].last_intrusion
                         _ts   = state_map[check_cam_id].last_intrusion_ts
+                    _intr = state_map[check_cam_id].is_intruding()
                     if _intr:
                         intrusion_active = True
                         break
@@ -308,6 +309,8 @@ def save_loop(
                         with state_map[cam_id].detection_lock:
                             _wl = state_map[cam_id].last_warning_level
                             _spd = state_map[cam_id].forklift_speed
+                        if not state_map[cam_id].is_intruding():
+                            _wl = WarningLevel.SAFE
                         writer_event_info[cam_id] = (_wl.name, _spd)
                         writer_max_severity[cam_id] = _WARN_TO_SEV.get(_wl.name, 0)
 
@@ -372,6 +375,8 @@ def save_loop(
                     if state_map and cam_id in state_map:
                         with state_map[cam_id].detection_lock:
                             _cur_wl = state_map[cam_id].last_warning_level
+                        if not state_map[cam_id].is_intruding():
+                            _cur_wl = WarningLevel.SAFE
                         _cur_sev = _WARN_TO_SEV.get(_cur_wl.name, 0)
                         if _cur_sev > writer_max_severity.get(cam_id, 0):
                             writer_max_severity[cam_id] = _cur_sev

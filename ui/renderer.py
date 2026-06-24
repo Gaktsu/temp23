@@ -71,8 +71,8 @@ def draw_results(
     return frame
 
 _LEVEL_COLOR = {
-    WarningLevel.SAFE:       (0, 255, 0),
-    WarningLevel.BLIND_SPOT: (0, 255, 255),
+    WarningLevel.SAFE:       (160, 160, 160),
+    WarningLevel.BLIND_SPOT: (160, 160, 160),
     WarningLevel.APPROACH:   (0, 165, 255),
     WarningLevel.URGENT:     (0, 0, 255),
 }

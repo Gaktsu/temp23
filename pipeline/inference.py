@@ -4,9 +4,10 @@ Inference loop pipeline module.
 from __future__ import annotations
 
 import queue
+import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from utils.logger import get_logger, EventType
 import numpy as np
@@ -18,13 +19,20 @@ from ai.detector import (
 from ai.model import YOLOInference
 from pipeline.shared_state import SharedState
 from config.roi_manager import roi_config_path
-from config.settings import CAMERA_DEFAULT_WIDTH, CAMERA_DEFAULT_HEIGHT, CAMERA_OUTPUT_WIDTH, CAMERA_OUTPUT_HEIGHT
+from config.settings import (
+    CAMERA_DEFAULT_WIDTH,
+    CAMERA_DEFAULT_HEIGHT,
+    CAMERA_OUTPUT_WIDTH,
+    CAMERA_OUTPUT_HEIGHT,
+    REQUIRE_ROI_FOR_INTRUSION,
+)
 from pipeline.uploader import notify_roi_warning
 
 _ROI_SCALE_X = CAMERA_DEFAULT_WIDTH / CAMERA_OUTPUT_WIDTH
 _ROI_SCALE_Y = CAMERA_DEFAULT_HEIGHT / CAMERA_OUTPUT_HEIGHT
 
 logger = get_logger("pipeline.inference")
+_roi_load_failure_logged: Set[str] = set()
 
 # 두 카메라 추론 스레드가 동시에 GPU를 사용할 때 발생하는
 # CUDA 메모리 경합 / ByteTrack 내부 상태 충돌을 방지하기 위한 Lock.
@@ -93,6 +101,13 @@ def _try_lazy_load_roi(roi_polygon, roi_path: str, cam_id: int):
     loaded = load_roi_polygon(roi_path, scale_x=_ROI_SCALE_X, scale_y=_ROI_SCALE_Y)
     if loaded:
         logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 지연 로드 완료", {"cam": cam_id})
+    elif os.path.exists(roi_path) and roi_path not in _roi_load_failure_logged:
+        _roi_load_failure_logged.add(roi_path)
+        logger.event_warning(
+            EventType.MODULE_INIT,
+            "ROI 폴리곤 지연 로드 실패 - SAFE 유지",
+            {"cam": cam_id, "path": roi_path},
+        )
     return loaded
 
 
@@ -105,6 +120,10 @@ def _compute_dynamic_roi(base_polygon, speed: int, pixels_per_speed_level: int):
     polygon_array[top_vertex_indices, 1] -= speed * pixels_per_speed_level
     polygon_array[top_vertex_indices, 1] = np.maximum(polygon_array[top_vertex_indices, 1], 0)
     return polygon_array.tolist()
+
+
+def _has_valid_roi(polygon) -> bool:
+    return polygon is not None and len(polygon) >= 3
 
 
 def _count_persons_in_roi(detections: List[Detection], dynamic_polygon) -> int:
@@ -192,8 +211,15 @@ def _single_cam_inference_loop(
     roi_polygon: Optional[Any] = load_roi_polygon(roi_path, scale_x=_ROI_SCALE_X, scale_y=_ROI_SCALE_Y)
     if roi_polygon:
         logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 로드 완료", {"cam": cam_id})
+    elif os.path.exists(roi_path):
+        _roi_load_failure_logged.add(roi_path)
+        logger.event_warning(
+            EventType.MODULE_INIT,
+            "ROI 폴리곤 로드 실패 - SAFE 유지",
+            {"cam": cam_id, "path": roi_path},
+        )
     else:
-        logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 없음 — 파일 생성 시 자동 로드됨", {"cam": cam_id})
+        logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 없음 - SAFE 유지, 파일 생성 시 자동 로드됨", {"cam": cam_id})
 
     # 집계 로그 변수 (5초마다 출력)
     _AGG_INTERVAL = 5.0
@@ -250,23 +276,28 @@ def _single_cam_inference_loop(
         # ROI 지연 로드
         roi_polygon = _try_lazy_load_roi(roi_polygon, roi_path, cam_id)
 
-        # 동적 ROI 계산 (속도 기반 상단 확장)
+        # 동적 ROI 계산 (속도 기반 상단 확장). ROI가 없으면 감지/경고 상태는 SAFE로 고정.
         dynamic_polygon = _compute_dynamic_roi(roi_polygon, state.forklift_speed, DYNAMIC_ROI_PX_PER_SPEED)
 
-        # TTC 분석 → 경고 레벨 산출
-        with state.track_history_lock:
-            warning_level = analyze_ttc(detections, dynamic_polygon, state.track_history)
-            active_ids: List[int] = [
-                det["track_id"] for det in detections  # type: ignore[typeddict-item]
-                if det.get("track_id") is not None
-            ]
-            cleanup_track_history(state.track_history, active_ids)
-
-        intrusion = warning_level != WarningLevel.SAFE
         roi_count = _count_persons_in_roi(detections, dynamic_polygon)
+        if REQUIRE_ROI_FOR_INTRUSION and not _has_valid_roi(dynamic_polygon):
+            warning_level = WarningLevel.SAFE
+            intrusion = False
+            with state.track_history_lock:
+                state.track_history.clear()
+        else:
+            # TTC 분석 → ROI 기반 경고 레벨 산출
+            with state.track_history_lock:
+                warning_level = analyze_ttc(detections, dynamic_polygon, state.track_history)
+                active_ids: List[int] = [
+                    det["track_id"] for det in detections  # type: ignore[typeddict-item]
+                    if det.get("track_id") is not None
+                ]
+                cleanup_track_history(state.track_history, active_ids)
+            intrusion = roi_count > 0 or warning_level != WarningLevel.SAFE
 
         # non-SAFE 구간 프레임 카운트 — EVENT_NOTIFY_DELAY_FRAMES 이후 이벤트 전송
-        if warning_level != WarningLevel.SAFE:
+        if intrusion:
             _non_safe_frame_count += 1
         else:
             _non_safe_frame_count = 0

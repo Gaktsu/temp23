@@ -7,6 +7,9 @@ import cv2
 import time
 import threading
 import platform
+import re
+import shutil
+import subprocess
 from typing import List, Optional, Tuple
 from config.settings import (
     CAMERA_INDICES, CAMERA_MAX_RETRIES, CAMERA_RETRY_DELAY,
@@ -14,6 +17,9 @@ from config.settings import (
     CAMERA_DEFAULT_WIDTH, CAMERA_DEFAULT_HEIGHT,
     CAMERA_DEFAULT_FPS, CAMERA_DEFAULT_FOURCC,
     CAMERA_OUTPUT_WIDTH, CAMERA_OUTPUT_HEIGHT,
+    CAMERA_RECONNECT_COOLDOWN_SEC, CAMERA_RECONNECT_MAX_RETRIES,
+    CAMERA_RESET_CONTROLS_TO_DEFAULT, CAMERA_DISABLE_AUTOFOCUS,
+    CAMERA_AUTOFOCUS_CONTROL_NAMES,
 )
 from errors.enums import CameraError
 from utils.logger import get_logger, EventType
@@ -85,10 +91,15 @@ def _open_cap(
     fourcc: str = CAMERA_DEFAULT_FOURCC,
 ) -> cv2.VideoCapture:
     """OS에 맞는 백엔드로 VideoCapture를 생성한다."""
+    if setup_format and not IS_WINDOWS:
+        _apply_v4l2_camera_controls(camera_index)
+
     if IS_WINDOWS:
         cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     else:
         cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+
+    _disable_opencv_autofocus(cap)
 
     if setup_format:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
@@ -105,6 +116,132 @@ def _open_cap(
             time.sleep(0.05)
 
     return cap
+
+
+def _run_v4l2_ctl(camera_index: int, args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["v4l2-ctl", "-d", f"/dev/video{camera_index}"] + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def _parse_v4l2_default_controls(output: str) -> dict:
+    controls = {}
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        name = line.split()[0]
+        ctrl_type_match = re.search(r"\(([^)]+)\)", line)
+        if ctrl_type_match and ctrl_type_match.group(1) in {"button", "ctrl-class"}:
+            continue
+        flags_match = re.search(r"flags=([^\s]+)", line)
+        flags = flags_match.group(1).split(",") if flags_match else []
+        if "read-only" in flags or "inactive" in flags:
+            continue
+        default_match = re.search(r"default=(-?\d+)", line)
+        if default_match is None:
+            continue
+        controls[name] = int(default_match.group(1))
+    return controls
+
+
+def _set_v4l2_control(camera_index: int, name: str, value: int) -> bool:
+    result = _run_v4l2_ctl(camera_index, ["--set-ctrl", f"{name}={value}"])
+    if result.returncode != 0:
+        logger.event_warning(
+            EventType.CAMERA_ERROR,
+            "카메라 V4L2 컨트롤 적용 실패",
+            {
+                "camera_index": camera_index,
+                "control": name,
+                "value": value,
+                "stderr": result.stderr.strip(),
+            },
+        )
+        return False
+    return True
+
+
+def _reset_v4l2_controls_to_default(camera_index: int) -> None:
+    if shutil.which("v4l2-ctl") is None:
+        logger.event_warning(
+            EventType.CAMERA_ERROR,
+            "v4l2-ctl 없음 - 카메라 컨트롤 기본값 초기화 건너뜀",
+            {"camera_index": camera_index},
+        )
+        return
+
+    result = _run_v4l2_ctl(camera_index, ["--list-ctrls"])
+    if result.returncode != 0:
+        logger.event_warning(
+            EventType.CAMERA_ERROR,
+            "카메라 V4L2 컨트롤 조회 실패",
+            {"camera_index": camera_index, "stderr": result.stderr.strip()},
+        )
+        return
+
+    controls = _parse_v4l2_default_controls(result.stdout)
+    applied = 0
+    for name, default_value in controls.items():
+        if _set_v4l2_control(camera_index, name, default_value):
+            applied += 1
+
+    logger.event_info(
+        EventType.MODULE_INIT,
+        "카메라 V4L2 컨트롤 기본값 초기화 완료",
+        {
+            "camera_index": camera_index,
+            "controls_found": len(controls),
+            "controls_applied": applied,
+        },
+    )
+
+
+def _disable_autofocus_controls(camera_index: int) -> None:
+    if shutil.which("v4l2-ctl") is None:
+        return
+
+    disabled = []
+    for name in CAMERA_AUTOFOCUS_CONTROL_NAMES:
+        result = _run_v4l2_ctl(camera_index, ["--set-ctrl", f"{name}=0"])
+        if result.returncode == 0:
+            disabled.append(name)
+
+    if disabled:
+        logger.event_info(
+            EventType.MODULE_INIT,
+            "카메라 자동초점 비활성화",
+            {"camera_index": camera_index, "controls": disabled},
+        )
+    else:
+        logger.event_info(
+            EventType.MODULE_INIT,
+            "자동초점 컨트롤 없음 - 비활성화 적용 안 함",
+            {"camera_index": camera_index},
+        )
+
+
+def _disable_opencv_autofocus(cap: cv2.VideoCapture) -> None:
+    if not cap.isOpened():
+        return
+
+    if CAMERA_DISABLE_AUTOFOCUS and hasattr(cv2, "CAP_PROP_AUTOFOCUS"):
+        try:
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        except Exception:
+            pass
+
+
+def _apply_v4l2_camera_controls(camera_index: int) -> None:
+    # 장치를 열 때마다 기본값 복원 및 자동초점 비활성화를 다시 적용한다.
+    if CAMERA_RESET_CONTROLS_TO_DEFAULT:
+        _reset_v4l2_controls_to_default(camera_index)
+    if CAMERA_DISABLE_AUTOFOCUS:
+        _disable_autofocus_controls(camera_index)
 
 
 def open_camera_with_retry(
@@ -169,6 +306,9 @@ class CameraCapture:
         self.cap_lock = threading.Lock()
         self._reconnect_lock = threading.Lock()
         self._reconnect_cooldown_until: float = 0.0
+        self.reconnect_attempts: int = 0
+        self.last_reconnect_result: str = "not_attempted"
+        self.last_reconnect_ts: float = 0.0
         cfg = CAMERA_CAPTURE_CONFIGS.get(camera_index, {})
         self._cap_width  = cfg.get("width",  CAMERA_DEFAULT_WIDTH)
         self._cap_height = cfg.get("height", CAMERA_DEFAULT_HEIGHT)
@@ -206,7 +346,7 @@ class CameraCapture:
 
         return self.reconnect(max_retries=max_retries, retry_delay=retry_delay)
 
-    def reconnect(self, max_retries: int = 3, retry_delay: float = 2.0) -> bool:
+    def reconnect(self, max_retries: int = CAMERA_RECONNECT_MAX_RETRIES, retry_delay: float = 2.0) -> bool:
         """카메라를 강제로 다시 엽니다."""
         if not self.running:
             return False
@@ -216,8 +356,8 @@ class CameraCapture:
             return False
 
         try:
-            # 쿨다운 중이면 즉시 반환 — 어떤 경로로 호출해도 동일하게 적용
             if time.time() < self._reconnect_cooldown_until:
+                self.last_reconnect_result = "cooldown"
                 return False
 
             with self.cap_lock:
@@ -229,12 +369,26 @@ class CameraCapture:
                     self.cap = None
 
             for attempt in range(1, max_retries + 1):
+                self.reconnect_attempts += 1
+                self.last_reconnect_ts = time.time()
                 logger.event_warning(
                     EventType.CAMERA_ERROR,
                     "카메라 재연결 시도",
-                    {"camera_index": self.camera_index, "attempt": attempt, "max_retries": max_retries},
+                    {
+                        "camera_index": self.camera_index,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "total_attempts": self.reconnect_attempts,
+                    },
                 )
-                cap = _open_cap(self.camera_index, setup_format=False)
+                cap = _open_cap(
+                    self.camera_index,
+                    setup_format=True,
+                    width=self._cap_width,
+                    height=self._cap_height,
+                    fps=self._cap_fps,
+                    fourcc=self._cap_fourcc,
+                )
                 if cap.isOpened():
                     ret, _ = cap.read()
                     if ret:
@@ -242,10 +396,18 @@ class CameraCapture:
                             self.cap = cap
                             self.running = True
                         self._reconnect_cooldown_until = 0.0
+                        self.last_reconnect_result = "success"
                         logger.event_info(
                             EventType.CAMERA_OPEN,
                             "카메라 재연결 성공",
-                            {"camera_index": self.camera_index, "attempt": attempt},
+                            {
+                                "camera_index": self.camera_index,
+                                "attempt": attempt,
+                                "width": self._cap_width,
+                                "height": self._cap_height,
+                                "fps": self._cap_fps,
+                                "fourcc": self._cap_fourcc,
+                            },
                         )
                         return True
 
@@ -256,9 +418,14 @@ class CameraCapture:
             logger.event_error(
                 EventType.CAMERA_ERROR,
                 "카메라 재연결 실패",
-                {"camera_index": self.camera_index, "max_retries": max_retries},
+                {
+                    "camera_index": self.camera_index,
+                    "max_retries": max_retries,
+                    "cooldown_sec": CAMERA_RECONNECT_COOLDOWN_SEC,
+                },
             )
-            self._reconnect_cooldown_until = time.time() + 30.0
+            self.last_reconnect_result = "failed"
+            self._reconnect_cooldown_until = time.time() + CAMERA_RECONNECT_COOLDOWN_SEC
             return False
 
         finally:
