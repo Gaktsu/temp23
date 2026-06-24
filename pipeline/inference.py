@@ -1,0 +1,353 @@
+"""
+Inference loop pipeline module.
+"""
+from __future__ import annotations
+
+import queue
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+from utils.logger import get_logger, EventType
+import numpy as np
+
+from ai.detector import (
+    Detection, WarningLevel,
+    analyze_ttc, check_intrusion_polygon, cleanup_track_history, load_roi_polygon,
+)
+from ai.model import YOLOInference
+from pipeline.shared_state import SharedState
+from config.roi_manager import roi_config_path
+from config.settings import CAMERA_DEFAULT_WIDTH, CAMERA_DEFAULT_HEIGHT, CAMERA_OUTPUT_WIDTH, CAMERA_OUTPUT_HEIGHT
+from pipeline.uploader import notify_roi_warning
+
+_ROI_SCALE_X = CAMERA_DEFAULT_WIDTH / CAMERA_OUTPUT_WIDTH
+_ROI_SCALE_Y = CAMERA_DEFAULT_HEIGHT / CAMERA_OUTPUT_HEIGHT
+
+logger = get_logger("pipeline.inference")
+
+# 두 카메라 추론 스레드가 동시에 GPU를 사용할 때 발생하는
+# CUDA 메모리 경합 / ByteTrack 내부 상태 충돌을 방지하기 위한 Lock.
+# 한 번에 한 스레드만 run_inference()를 실행한다.
+_gpu_lock = threading.Lock()
+
+
+def _calculate_list_average(values: list) -> float:
+    """리스트 평균. 빈 경우 0.0 반환."""
+    return sum(values) / len(values) if values else 0.0
+
+
+def _calculate_list_maximum(values: list) -> float:
+    """리스트 최댓값. 빈 경우 0.0 반환."""
+    return max(values) if values else 0.0
+
+
+def start_inference_thread(
+    models: List[YOLOInference],
+    states: List[SharedState],
+    get_sensor_snapshot,
+    stop_event: threading.Event,
+    cam_ids: Optional[List[int]] = None,
+) -> List[threading.Thread]:
+    """카메라별 독립 추론 스레드 시작. 스레드 리스트 반환.
+
+    Args:
+        cam_ids: 카메라 ID 목록. None이면 settings.CAMERA_INDICES 사용.
+    """
+    if cam_ids is None:
+        from config.settings import CAMERA_INDICES as cam_ids  # type: ignore[assignment]
+    threads = []
+    for idx, (model, state) in enumerate(zip(models, states)):
+        cam_id = cam_ids[idx] if idx < len(cam_ids) else idx
+        t = threading.Thread(
+            target=_single_cam_inference_loop,
+            args=(model, state, cam_id, get_sensor_snapshot, stop_event),
+            daemon=True,
+            name=f"inference_cam{cam_id}",
+        )
+        t.start()
+        logger.debug(f"추론 스레드 시작 (cam={cam_id})")
+        threads.append(t)
+    return threads
+
+
+def _log_aggregated_stats(cam_id: int, agg_infer: list, agg_post: list, agg_det: list) -> None:
+    """최근 5초간 추론 성능 지표를 집계하여 로그로 출력합니다."""
+    logger.event_info(
+        EventType.DATA_PROCESSED,
+        f"[집계] cam{cam_id} 추론 성능 (최근 5초)",
+        {
+            "infer_avg_ms": round(_calculate_list_average(agg_infer), 2),
+            "infer_max_ms": round(_calculate_list_maximum(agg_infer), 2),
+            "post_avg_ms":  round(_calculate_list_average(agg_post),  2),
+            "det_avg":      round(_calculate_list_average(agg_det),   2),
+            "frames":       len(agg_infer),
+        },
+    )
+
+
+def _try_lazy_load_roi(roi_polygon, roi_path: str, cam_id: int):
+    """ROI 폴리곤이 None일 때 JSON 파일에서 지연 로드를 시도합니다."""
+    if roi_polygon is not None:
+        return roi_polygon
+    loaded = load_roi_polygon(roi_path, scale_x=_ROI_SCALE_X, scale_y=_ROI_SCALE_Y)
+    if loaded:
+        logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 지연 로드 완료", {"cam": cam_id})
+    return loaded
+
+
+def _compute_dynamic_roi(base_polygon, speed: int, pixels_per_speed_level: int):
+    """지게차 속도에 따라 위험 영역 상단을 확장한 동적 ROI 폴리곤을 반환합니다."""
+    if base_polygon is None or speed <= 0:
+        return base_polygon
+    polygon_array = np.array(base_polygon, dtype=np.int32)
+    top_vertex_indices = np.argsort(polygon_array[:, 1])[:2]
+    polygon_array[top_vertex_indices, 1] -= speed * pixels_per_speed_level
+    polygon_array[top_vertex_indices, 1] = np.maximum(polygon_array[top_vertex_indices, 1], 0)
+    return polygon_array.tolist()
+
+
+def _count_persons_in_roi(detections: List[Detection], dynamic_polygon) -> int:
+    """ROI 폴리곤 내부에 발끝이 있는 사람 수를 반환합니다."""
+    if dynamic_polygon is None:
+        return 0
+    import cv2 as _cv2
+    polygon_array = np.array(dynamic_polygon, dtype=np.int32)
+    count = 0
+    for detection in detections:
+        x1, y1, x2, y2 = detection["bbox"]
+        foot_x = (x1 + x2) // 2
+        foot_y = y2
+        if _cv2.pointPolygonTest(polygon_array, (float(foot_x), float(foot_y)), False) >= 0:
+            count += 1
+    return count
+
+
+def _update_detection_state(
+    state: SharedState,
+    detections: List[Detection],
+    warning_level,
+    intrusion: bool,
+    timestamp: float,
+    sensor_data,
+) -> None:
+    """탐지 결과와 경고 레벨을 SharedState에 원자적으로 기록합니다."""
+    state.update_detection_result(detections, warning_level, intrusion, timestamp, sensor_data)
+
+
+def _queue_intrusion_event_if_needed(
+    state: SharedState,
+    cam_id: int,
+    warning_level,
+    intrusion: bool,
+    roi_count: int,
+    last_log_time: float,
+    cooldown_sec: float,
+) -> float:
+    """ROI 침입 시 쿨다운을 확인하고 이벤트 로그 + 업로드 큐 전달. 갱신된 last_log_time 반환."""
+    if not (intrusion and roi_count > 0):
+        return last_log_time
+    now_t = time.perf_counter()
+    if now_t - last_log_time < cooldown_sec:
+        return last_log_time
+    logger.event_info(
+        EventType.DETECTION_RESULT,
+        "위험 영역 내 객체 탐지",
+        {"cam": cam_id, "roi_count": roi_count, "warning": warning_level.value},
+    )
+    try:
+        state.event_queue.put_nowait((warning_level.value, cam_id, state.forklift_speed))
+    except Exception:
+        pass
+    return now_t
+
+
+def _store_smoothed_detections(
+    state: SharedState,
+    seq: int,
+    smoothed: List[Detection],
+) -> None:
+    """스무딩된 탐지 결과를 히스토리·현재·유효 탐지 버퍼에 저장합니다."""
+    state.push_smoothed_detections(seq, smoothed)
+
+
+def _single_cam_inference_loop(
+    model: YOLOInference,
+    state: SharedState,
+    cam_id: int,
+    sensor_getter: Optional[Callable[[float], Dict[str, Any]]],
+    stop_event: Optional[threading.Event],
+) -> None:
+    """카메라 1개 전담 추론 루프. 카메라별 스레드에서 실행."""
+    from config.settings import ENABLE_TRACKING, DYNAMIC_ROI_PX_PER_SPEED, INFER_STRIDE, EVENT_NOTIFY_DELAY_FRAMES
+
+    logger.event_info(EventType.MODULE_START, "추론 루프 시작", {"cam": cam_id})
+
+    # 이벤트 로그 쿨다운: 같은 카메라에서 N초 이내 중복 기록 방지
+    _LOG_COOLDOWN_SEC = 10.0
+    _last_log_time: float = 0.0
+
+    # ROI 폴리곤 로드 (파일 없으면 매 프레임 재시도)
+    roi_path = roi_config_path(cam_id)
+    roi_polygon: Optional[Any] = load_roi_polygon(roi_path, scale_x=_ROI_SCALE_X, scale_y=_ROI_SCALE_Y)
+    if roi_polygon:
+        logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 로드 완료", {"cam": cam_id})
+    else:
+        logger.event_info(EventType.MODULE_INIT, "ROI 폴리곤 없음 — 파일 생성 시 자동 로드됨", {"cam": cam_id})
+
+    # 집계 로그 변수 (5초마다 출력)
+    _AGG_INTERVAL = 5.0
+    _stats_interval_start = time.perf_counter()
+    _infer_ms_samples: list = []
+    _postprocess_ms_samples:  list = []
+    _detection_count_samples:   list = []
+
+    inference_count = 0
+    stride_counter = 0
+    _non_safe_frame_count: int = 0
+
+    while not state.stop_event.is_set():
+        if stop_event is not None and stop_event.is_set():
+            break
+
+        try:
+            seq, timestamp, frame = state.frame_queue.get(timeout=0.05)
+        except queue.Empty:
+            continue
+
+        # ── INFER_STRIDE: N프레임마다 1회만 추론 ──
+        stride_counter = (stride_counter + 1) % INFER_STRIDE
+        if stride_counter != 0:
+            continue
+
+        # ── GPU 추론 (Lock으로 직렬화 — CUDA 경합 방지) ──
+        t0 = time.perf_counter()
+        with _gpu_lock:
+            results = model.run_inference(frame, tracking=ENABLE_TRACKING)
+        state.inference_ms = (time.perf_counter() - t0) * 1000
+
+        # ── CPU 후처리 ──
+        t1 = time.perf_counter()
+        detections = model.postprocess_results(results)
+        state.postprocess_ms = (time.perf_counter() - t1) * 1000
+
+        inference_count += 1
+        _infer_ms_samples.append(state.inference_ms)
+        _postprocess_ms_samples.append(state.postprocess_ms)
+        _detection_count_samples.append(len(detections))
+
+        # 5초마다 집계 로그
+        now = time.perf_counter()
+        if now - _stats_interval_start >= _AGG_INTERVAL:
+            _log_aggregated_stats(cam_id, _infer_ms_samples, _postprocess_ms_samples, _detection_count_samples)
+            _stats_interval_start = now
+            _infer_ms_samples.clear()
+            _postprocess_ms_samples.clear()
+            _detection_count_samples.clear()
+
+        sensor_data = sensor_getter(timestamp) if sensor_getter else None
+
+        # ROI 지연 로드
+        roi_polygon = _try_lazy_load_roi(roi_polygon, roi_path, cam_id)
+
+        # 동적 ROI 계산 (속도 기반 상단 확장)
+        dynamic_polygon = _compute_dynamic_roi(roi_polygon, state.forklift_speed, DYNAMIC_ROI_PX_PER_SPEED)
+
+        # TTC 분석 → 경고 레벨 산출
+        with state.track_history_lock:
+            warning_level = analyze_ttc(detections, dynamic_polygon, state.track_history)
+            active_ids: List[int] = [
+                det["track_id"] for det in detections  # type: ignore[typeddict-item]
+                if det.get("track_id") is not None
+            ]
+            cleanup_track_history(state.track_history, active_ids)
+
+        intrusion = warning_level != WarningLevel.SAFE
+        roi_count = _count_persons_in_roi(detections, dynamic_polygon)
+
+        # non-SAFE 구간 프레임 카운트 — EVENT_NOTIFY_DELAY_FRAMES 이후 이벤트 전송
+        if warning_level != WarningLevel.SAFE:
+            _non_safe_frame_count += 1
+        else:
+            _non_safe_frame_count = 0
+
+        _update_detection_state(state, detections, warning_level, intrusion, timestamp, sensor_data)
+
+        if _non_safe_frame_count >= EVENT_NOTIFY_DELAY_FRAMES:
+            # Path 1: notify_roi_warning — 지연 도달 시 한 번만 발동
+            if _non_safe_frame_count == EVENT_NOTIFY_DELAY_FRAMES:
+                notify_roi_warning(warning_level, cam_id)
+            # Path 2: 이벤트 큐 — 이후 10초 쿨다운 적용
+            _last_log_time = _queue_intrusion_event_if_needed(
+                state, cam_id, warning_level, intrusion, roi_count,
+                _last_log_time, _LOG_COOLDOWN_SEC,
+            )
+
+        smoothed = _smooth_detections(state.smoothed_detections, detections)
+        _store_smoothed_detections(state, seq, smoothed)
+
+    logger.event_info(
+        EventType.MODULE_STOP,
+        "추론 루프 종료",
+        {"cam": cam_id, "total_inferences": inference_count},
+    )
+
+def _smooth_detections(
+    prev_detections: List[Detection],
+    curr_detections: List[Detection],
+    smoothing_factor: float = 0.7
+) -> List[Detection]:
+    """
+    바운딩 박스 smoothing (부드러운 전환)
+    
+    Args:
+        prev_detections:  이전 프레임 탐지 결과
+        curr_detections:  현재 프레임 탐지 결과
+        smoothing_factor: 이전 프레임 가중치 (0.7 = 이전 70%, 현재 30%)
+    
+    Returns:
+        스무딩된 탐지 결과
+    """
+    if not curr_detections:
+        return prev_detections
+
+    if not prev_detections:
+        return curr_detections
+
+    smoothed: List[Detection] = []
+
+    for curr_det in curr_detections:
+        curr_x1, curr_y1, curr_x2, curr_y2 = curr_det["bbox"]
+        curr_center_x = (curr_x1 + curr_x2) / 2
+        curr_center_y = (curr_y1 + curr_y2) / 2
+
+        min_centroid_distance = float('inf')
+        closest_prev_det = None
+
+        for prev_det in prev_detections:
+            prev_x1, prev_y1, prev_x2, prev_y2 = prev_det["bbox"]
+            if curr_det["class_id"] == prev_det["class_id"]:
+                prev_center_x = (prev_x1 + prev_x2) / 2
+                prev_center_y = (prev_y1 + prev_y2) / 2
+                centroid_distance = ((curr_center_x - prev_center_x) ** 2 + (curr_center_y - prev_center_y) ** 2) ** 0.5
+                if centroid_distance < min_centroid_distance:
+                    min_centroid_distance = centroid_distance
+                    closest_prev_det = prev_det
+
+        if closest_prev_det and min_centroid_distance < 200:  # 200픽셀 이내
+            prev_x1, prev_y1, prev_x2, prev_y2 = closest_prev_det["bbox"]
+            smoothed.append(Detection(
+                bbox=(
+                    int(smoothing_factor * prev_x1 + (1 - smoothing_factor) * curr_x1),
+                    int(smoothing_factor * prev_y1 + (1 - smoothing_factor) * curr_y1),
+                    int(smoothing_factor * prev_x2 + (1 - smoothing_factor) * curr_x2),
+                    int(smoothing_factor * prev_y2 + (1 - smoothing_factor) * curr_y2),
+                ),
+                confidence=smoothing_factor * closest_prev_det["confidence"] + (1 - smoothing_factor) * curr_det["confidence"],
+                class_id=curr_det["class_id"],
+                class_name=curr_det["class_name"],
+            ))
+        else:
+            smoothed.append(curr_det)
+
+    return smoothed
