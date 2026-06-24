@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Tuple, TypedDict
+from config.settings import TTC_APPROACH_RATIO, TTC_HISTORY_LEN, TTC_URGENT_RATIO
 
 class _DetectionRequired(TypedDict):
     """탐지 결과 — 필수 필드"""
@@ -147,12 +148,6 @@ def load_roi_polygon(
 # TTC (Time-To-Collision) 분석
 # ──────────────────────────────────────────────
 
-# yolo_test-main 기준 상수
-_TTC_HISTORY_LEN   = 15    # 판별에 사용할 최대 면적 이력 프레임 수
-_URGENT_RATIO      = 1.30  # 30% 이상 급팽창 → URGENT  (뛰어오는 속도)
-_APPROACH_RATIO    = 1.10  # 10% 이상 팽창   → APPROACH (보행 속도)
-
-
 def analyze_ttc(
     detections: List[Detection],
     roi_polygon: Optional[Sequence[Sequence[int]]],
@@ -163,9 +158,9 @@ def analyze_ttc(
 
     yolo_test-main/main_system.py 의 로직을 이식:
       1. ROI 내부 여부 → BLIND_SPOT 이상
-      2. 박스 면적 이력(15프레임) 팽창 비율:
-         - > 1.30 → URGENT
-         - > 1.10 → APPROACH
+      2. 박스 면적 이력(TTC_HISTORY_LEN) 팽창 비율:
+         - > TTC_URGENT_RATIO → URGENT
+         - > TTC_APPROACH_RATIO → APPROACH
 
     Args:
         detections:    현재 프레임의 탐지 결과 (track_id 포함 필요)
@@ -200,14 +195,15 @@ def analyze_ttc(
             box_area = float((x2 - x1) * (y2 - y1))
             history = track_history[track_id]
             history.append(box_area)
-            if len(history) > _TTC_HISTORY_LEN:
+            history_len = max(int(TTC_HISTORY_LEN), 2)
+            if len(history) > history_len:
                 history.pop(0)
 
-            if len(history) == _TTC_HISTORY_LEN and history[0] > 0:
+            if len(history) == history_len and history[0] > 0:
                 expansion_ratio = history[-1] / history[0]
-                if expansion_ratio > _URGENT_RATIO:
+                if expansion_ratio > TTC_URGENT_RATIO:
                     level = WarningLevel.URGENT
-                elif expansion_ratio > _APPROACH_RATIO:
+                elif expansion_ratio > TTC_APPROACH_RATIO:
                     level = WarningLevel.APPROACH
 
         if level > worst:

@@ -1,10 +1,21 @@
 import cv2
 import datetime
 import os
+import time
 from PyQt5.QtWidgets import QWidget, QLabel, QPushButton
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
-from config.settings import CAMERA_INDICES, PROJECT_ROOT, CAMERA_DEFAULT_WIDTH, CAMERA_DEFAULT_HEIGHT, CAMERA_OUTPUT_WIDTH, CAMERA_OUTPUT_HEIGHT
+from config.settings import (
+    CAMERA_INDICES,
+    PROJECT_ROOT,
+    CAMERA_DEFAULT_WIDTH,
+    CAMERA_DEFAULT_HEIGHT,
+    CAMERA_OUTPUT_WIDTH,
+    CAMERA_OUTPUT_HEIGHT,
+    WARNING_SCREEN_FLASH_ALPHA,
+    WARNING_SCREEN_FLASH_ENABLED,
+    WARNING_SCREEN_FLASH_INTERVAL_SEC,
+)
 from config.roi_manager import RoiManager
 from ui.renderer import draw_detections
 from ai.detector import Detection, WarningLevel, load_roi_polygon
@@ -41,6 +52,7 @@ class LiveScreen(QWidget):
         # ROI 폴리곤 캐시: {cam_id: (mtime, polygon)}
         # 파일 수정 시각이 바뀔 때만 재로드해 50ms마다 발생하던 파일 I/O 제거
         self._roi_cache: dict = {}
+        self._current_alert_level = WarningLevel.SAFE
 
         # pipeline의 SharedState 리스트 — 카메라/AI/녹화는 모두 pipeline이 담당
         self.shared_states = shared_states
@@ -54,7 +66,7 @@ class LiveScreen(QWidget):
         self.alert_bar.setGeometry(0, 0, 800, 50)
         self.alert_bar.setAlignment(Qt.AlignCenter)
         self.alert_bar.setStyleSheet(
-            "background-color: #111111; color: #bbbbbb; "
+            "background-color: #003300; color: #00ff00; "
             "font-size: 18px; font-weight: bold;"
         )
 
@@ -76,6 +88,11 @@ class LiveScreen(QWidget):
         self.full_screen_label.setAlignment(Qt.AlignCenter)
         self.full_screen_label.mousePressEvent = self._handle_full_screen_click
         self.full_screen_label.hide()
+
+        self.flash_overlay = QLabel(self)
+        self.flash_overlay.setGeometry(0, 0, 800, 480)
+        self.flash_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.flash_overlay.hide()
 
         # 화면 위에 상태창 텍스트들 스타일 (반투명 검은 배경에 흰 글씨)
         overlay_style = "background-color: rgba(0, 0, 0, 150); color: white; font-weight: bold; border-radius: 5px; padding: 5px;"
@@ -118,6 +135,7 @@ class LiveScreen(QWidget):
         self.set_btn.raise_()
         self.time_label.raise_()
         self.status_label.raise_()
+        self.flash_overlay.raise_()
 
         # 카메라/녹화는 pipeline(capture.py, recorder.py)이 전담
         # live_screen은 SharedState에서 프레임만 읽음
@@ -167,7 +185,9 @@ class LiveScreen(QWidget):
                 )
 
             # 상단 상태바: 모든 카메라 중 가장 높은 경고 레벨을 표시
-            self._update_alert_bar()
+            self._current_alert_level = self._update_alert_bar()
+        else:
+            self._current_alert_level = WarningLevel.SAFE
 
         # 사용자가 화면 하나를 터치해서 확대모드일 경우
         if self.expanded_pos_index is not None:
@@ -201,6 +221,8 @@ class LiveScreen(QWidget):
                     self.cam_labels[pos].setPixmap(QPixmap.fromImage(q_img))
                 else:
                     pass
+
+        self._update_screen_flash(self._current_alert_level)
 
     def mousePressEvent(self, event):
         x = event.x()
@@ -269,7 +291,7 @@ class LiveScreen(QWidget):
     def _update_alert_bar(self):
         """모든 SharedState의 경고 레벨 중 최고값을 상단 상태바에 반영."""
         if self.shared_states is None:
-            return
+            return WarningLevel.SAFE
 
         _order = [WarningLevel.SAFE, WarningLevel.BLIND_SPOT,
                   WarningLevel.APPROACH, WarningLevel.URGENT]
@@ -289,10 +311,10 @@ class LiveScreen(QWidget):
                 max_speed = spd
 
         if max_level == WarningLevel.SAFE:
-            color, bg = "#bbbbbb", "#111111"
+            color, bg = "#00ff00", "#003300"
             msg = f"SAFE  |  Speed: {max_speed}/5"
         elif max_level == WarningLevel.BLIND_SPOT:
-            color, bg = "#bbbbbb", "#111111"
+            color, bg = "#ffff00", "#333300"
             msg = f"CAUTION: BLIND SPOT  |  Speed: {max_speed}/5"
         elif max_level == WarningLevel.APPROACH:
             color, bg = "#ffa500", "#332200"
@@ -306,6 +328,30 @@ class LiveScreen(QWidget):
             f"background-color: {bg}; color: {color}; "
             "font-size: 18px; font-weight: bold;"
         )
+        return max_level
+
+    def _update_screen_flash(self, warning_level: WarningLevel):
+        if not WARNING_SCREEN_FLASH_ENABLED or warning_level not in (WarningLevel.APPROACH, WarningLevel.URGENT):
+            self.flash_overlay.hide()
+            return
+
+        interval = max(float(WARNING_SCREEN_FLASH_INTERVAL_SEC), 0.05)
+        if int(time.monotonic() / interval) % 2 != 0:
+            self.flash_overlay.hide()
+            return
+
+        if warning_level == WarningLevel.APPROACH:
+            r, g, b = 255, 165, 0
+        else:
+            r, g, b = 255, 0, 0
+
+        alpha_cfg = float(WARNING_SCREEN_FLASH_ALPHA)
+        alpha = int(alpha_cfg * 255) if alpha_cfg <= 1.0 else int(alpha_cfg)
+        alpha = max(0, min(255, alpha))
+        self.flash_overlay.setStyleSheet(f"background-color: rgba({r}, {g}, {b}, {alpha});")
+        self.flash_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.flash_overlay.raise_()
+        self.flash_overlay.show()
 
     # 프로그램 창이 닫힐 때 — 카메라/녹화/AI 정리는 pipeline(main.py)이 담당
     def closeEvent(self, event):

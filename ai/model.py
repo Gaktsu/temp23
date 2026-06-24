@@ -8,7 +8,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils.logger import get_logger, EventType
 from ai.detector import Detection
-from config.settings import CONFIDENCE_THRESHOLD, INFER_DEVICE, INFER_HALF, INFER_IMGSZ, MODEL_PATH, TARGET_CLASS_ID, TRACKER_CONFIG
+from config.settings import (
+    CONFIDENCE_THRESHOLD,
+    INFER_DEVICE,
+    INFER_HALF,
+    INFER_IMGSZ,
+    INFER_IOU_THRESHOLD,
+    MODEL_PATH,
+    POSTPROCESS_IOU_NMS_ENABLED,
+    POSTPROCESS_IOU_NMS_THRESHOLD,
+    TARGET_CLASS_ID,
+    TRACKER_CONFIG,
+)
 
 try:
     from ultralytics import YOLO
@@ -98,6 +109,7 @@ class YOLOInference:
         # (예: self.model = torch2trt 또는 TRTModule)
         common_kwargs = dict(
             conf=self.conf,
+            iou=INFER_IOU_THRESHOLD,
             imgsz=self.imgsz,
             half=INFER_HALF,           # settings.py의 INFER_HALF 사용
             device=self.device,        # GPU 강제 지정 (설정 기반)
@@ -172,6 +184,14 @@ class YOLOInference:
                 track_id=tid,
             ))
 
+        if POSTPROCESS_IOU_NMS_ENABLED:
+            before_nms = len(detections)
+            detections = _apply_iou_nms(detections, POSTPROCESS_IOU_NMS_THRESHOLD)
+            logger.debug(
+                "후처리 IoU NMS 적용",
+                {"before": before_nms, "after": len(detections), "iou": POSTPROCESS_IOU_NMS_THRESHOLD},
+            )
+
         logger.debug(
             "객체 탐지 완료",
             {"num_detections": len(detections), "total_boxes": total}
@@ -192,3 +212,47 @@ class YOLOInference:
         """
         results = self.run_inference(frame, tracking=tracking)
         return self.postprocess_results(results)
+
+
+def _bbox_iou(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    if inter_area <= 0:
+        return 0.0
+
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union_area = area_a + area_b - inter_area
+    if union_area <= 0:
+        return 0.0
+    return inter_area / union_area
+
+
+def _apply_iou_nms(detections: List[Detection], iou_threshold: float) -> List[Detection]:
+    if len(detections) <= 1:
+        return detections
+
+    threshold = max(0.0, min(1.0, float(iou_threshold)))
+    sorted_detections = sorted(detections, key=lambda det: det["confidence"], reverse=True)
+    kept: List[Detection] = []
+
+    for candidate in sorted_detections:
+        should_keep = True
+        for selected in kept:
+            if candidate["class_id"] != selected["class_id"]:
+                continue
+            if _bbox_iou(candidate["bbox"], selected["bbox"]) > threshold:
+                should_keep = False
+                break
+        if should_keep:
+            kept.append(candidate)
+
+    return kept

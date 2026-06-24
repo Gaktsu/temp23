@@ -56,13 +56,23 @@ CAMERA_OUTPUT_HEIGHT  = 480
 
 # YOLO 추론 설정
 INFER_STRIDE = 1         # N프레임마다 1회 추론 (1=매 프레임, 3=3프레임 중 1회)
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.35
+INFER_IOU_THRESHOLD = 0.45  # Ultralytics 내부 NMS IoU 임계값
 INFER_IMGSZ = 640        # 추론 입력 해상도 (TensorRT 전환 시에도 이 값 사용)
 INFER_HALF = False       # FP16 추론 비활성화 (탐지 품질 우선 — 속도 필요 시 True로 변경)
 INFER_DEVICE = "cuda:0"  # 추론 디바이스 ("cuda:0": GPU 강제, "cpu": CPU 전용)
 TARGET_CLASS_ID = 0      # person 클래스
 DETECTION_STALE_SEC = 2.0
 REQUIRE_ROI_FOR_INTRUSION = True
+DETECTION_OVERLAY_MODE = "bbox"  # "dot": 발끝 점 표시, "bbox": bbox + 내부 track id 표시
+POSTPROCESS_IOU_NMS_ENABLED = False    # True면 앱 후처리에서 bbox 중복 제거 추가 적용
+POSTPROCESS_IOU_NMS_THRESHOLD = 0.50   # 후처리 IoU가 이 값보다 크면 낮은 confidence bbox 제거
+
+# 화면 전체 경고 점멸 설정
+# APPROACH/URGENT 상태에서만 전체 화면 반투명 오버레이를 깜빡입니다.
+WARNING_SCREEN_FLASH_ENABLED = True
+WARNING_SCREEN_FLASH_ALPHA = 0.28       # 0.0~1.0 또는 0~255
+WARNING_SCREEN_FLASH_INTERVAL_SEC = 0.4 # on/off 전환 주기
 
 # 객체 추적 설정
 # True : model.track(persist=True) 사용 — TTC/동적ROI 기능에 필요
@@ -75,6 +85,12 @@ TRACKER_CONFIG = "bytetrack.yaml"
 # 지게차 속도 1 단계당 ROI 상단을 위로 확장할 픽셀 수
 # 속도가 빠를수록 ROI가 앞으로(위로) 늘어나 제동거리를 확보함
 DYNAMIC_ROI_PX_PER_SPEED = 30  # pixels / speed-level
+
+# TTC 접근 판정 설정
+# ROI 내부 사람의 바운딩 박스 면적이 최근 N회 추론 동안 얼마나 커졌는지로 접근을 추정합니다.
+TTC_HISTORY_LEN = 15       # 면적 증가율 계산에 사용할 추론 프레임 수
+TTC_APPROACH_RATIO = 1.10  # 10% 이상 커지면 APPROACH
+TTC_URGENT_RATIO = 1.30    # 30% 이상 커지면 URGENT
 
 # FPS 계산 설정
 FPS_UPDATE_INTERVAL = 1.0  # 초

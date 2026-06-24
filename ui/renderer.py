@@ -7,6 +7,7 @@ from typing import Any, List, Optional, Sequence
 from datetime import datetime
 
 from ai.detector import Detection, WarningLevel
+from config.settings import DETECTION_OVERLAY_MODE
 
 def draw_results(
     frame: cv2.Mat,
@@ -71,8 +72,8 @@ def draw_results(
     return frame
 
 _LEVEL_COLOR = {
-    WarningLevel.SAFE:       (160, 160, 160),
-    WarningLevel.BLIND_SPOT: (160, 160, 160),
+    WarningLevel.SAFE:       (0, 255, 0),
+    WarningLevel.BLIND_SPOT: (0, 255, 255),
     WarningLevel.APPROACH:   (0, 165, 255),
     WarningLevel.URGENT:     (0, 0, 255),
 }
@@ -137,6 +138,70 @@ def _draw_person_foot_dots(
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
 
 
+def _draw_person_bboxes(
+    frame: cv2.Mat,
+    detections: List[Detection],
+    polygon_array: Optional[np.ndarray],
+    alert_color,
+) -> None:
+    """사람 탐지 결과를 bbox로 그리고 track id를 bbox 내부에 표시합니다."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 2
+    padding = 4
+
+    for detection in detections:
+        if detection["class_id"] != 0:
+            continue
+
+        x1, y1, x2, y2 = detection["bbox"]
+        foot_x = (x1 + x2) // 2
+        foot_y = y2
+        is_inside = (
+            polygon_array is not None and
+            cv2.pointPolygonTest(polygon_array, (float(foot_x), float(foot_y)), False) >= 0
+        )
+        box_color = alert_color if is_inside else (255, 0, 0)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, thickness)
+
+        track_id = detection.get("track_id")
+        label = f"ID:{track_id}" if track_id is not None else "ID:-"
+        (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        label_w = text_width + padding * 2
+        label_h = text_height + baseline + padding * 2
+
+        label_x1 = max(x1, 0)
+        label_y1 = max(y1, 0)
+        label_x2 = min(label_x1 + label_w, frame.shape[1] - 1)
+        label_y2 = min(label_y1 + label_h, frame.shape[0] - 1)
+
+        cv2.rectangle(frame, (label_x1, label_y1), (label_x2, label_y2), box_color, -1)
+        cv2.putText(
+            frame,
+            label,
+            (label_x1 + padding, label_y2 - baseline - padding),
+            font,
+            font_scale,
+            (0, 0, 0),
+            thickness,
+            cv2.LINE_AA,
+        )
+
+
+def _draw_detection_overlay(
+    frame: cv2.Mat,
+    detections: List[Detection],
+    polygon_array: Optional[np.ndarray],
+    alert_color,
+) -> None:
+    mode = str(DETECTION_OVERLAY_MODE).strip().lower()
+    if mode == "bbox":
+        _draw_person_bboxes(frame, detections, polygon_array, alert_color)
+    else:
+        _draw_person_foot_dots(frame, detections, polygon_array, alert_color)
+
+
 def _draw_status_bar(
     frame: cv2.Mat,
     alarm_msg: str,
@@ -199,14 +264,14 @@ def draw_detections(
 
     상단 상태바: 경고 레벨별 색상 + 알람 메시지 + 속도 레벨
     ROI 오버레이: 경고 레벨 색상으로 테두리
-    발끝 점: ROI 내부=경고색, 외부=파랑
+    탐지 표시: settings.DETECTION_OVERLAY_MODE에 따라 발끝 점 또는 bbox 표시
     """
     warning_level = _resolve_warning_level(warning_level, intrusion)
     screen_color = _LEVEL_COLOR[warning_level]
     alarm_msg    = _LEVEL_MSG[warning_level]
 
     polygon_array = _draw_roi_overlay(frame, roi_polygon, screen_color)
-    _draw_person_foot_dots(frame, detections, polygon_array, screen_color)
+    _draw_detection_overlay(frame, detections, polygon_array, screen_color)
 
     if show_status_bar:
         _draw_status_bar(frame, alarm_msg, screen_color, forklift_speed, camera_index, saving)
