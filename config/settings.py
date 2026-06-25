@@ -11,9 +11,9 @@ RUNTIME_DIR = os.path.join(PROJECT_ROOT, "runtime")
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 HEARTBEAT_PATH = os.path.join(RUNTIME_DIR, "heartbeat.json")
 HEARTBEAT_INTERVAL_SEC = 2.0
-WATCHDOG_POLL_INTERVAL_SEC = 5.0
-WATCHDOG_STALE_THRESHOLD_SEC = 10.0
-WATCHDOG_STARTUP_GRACE_SEC = 15.0
+WATCHDOG_POLL_INTERVAL_SEC = 10.0
+WATCHDOG_STALE_THRESHOLD_SEC = 60.0
+WATCHDOG_STARTUP_GRACE_SEC = 90.0
 WATCHDOG_RESTART_DELAY_SEC = 3.0
 CAMERA_HEALTH_CHECK_INTERVAL_SEC = 5.0
 CAMERA_STALE_THRESHOLD_SEC = 10.0
@@ -28,7 +28,7 @@ MODEL_PATH = os.path.join(MODEL_DIR, DEFAULT_MODEL)
 
 # 카메라 설정
 # Jetson IMX219 4대 기본 노드: video0, video2, video4, video6
-CAMERA_INDICES = [0, 2]  # 사용 가능한 카메라 인덱스 리스트
+CAMERA_INDICES = [0, 2, 4, 6]  # 사용 가능한 카메라 인덱스 리스트
 CAMERA_INDEX = CAMERA_INDICES[0]  # 기본 카메라
 CAMERA_BUFFER_SIZE = 1
 CAMERA_MAX_RETRIES = 10
@@ -47,8 +47,8 @@ CAMERA_AUTOFOCUS_CONTROL_NAMES = [
 
 # 카메라별 캡처 포맷 설정 (기본값 미지정 시 DEFAULT 값 사용)
 CAMERA_CAPTURE_CONFIGS: dict = {}
-CAMERA_DEFAULT_WIDTH  = 640
-CAMERA_DEFAULT_HEIGHT = 480
+CAMERA_DEFAULT_WIDTH  = 320
+CAMERA_DEFAULT_HEIGHT = 240
 CAMERA_DEFAULT_FPS    = 15.0
 CAMERA_DEFAULT_FOURCC = "YUYV"
 CAMERA_OUTPUT_WIDTH   = 640
@@ -64,7 +64,7 @@ INFER_DEVICE = "cuda:0"  # 추론 디바이스 ("cuda:0": GPU 강제, "cpu": CPU
 TARGET_CLASS_ID = 0      # person 클래스
 DETECTION_STALE_SEC = 2.0
 REQUIRE_ROI_FOR_INTRUSION = True
-DETECTION_OVERLAY_MODE = "bbox"  # "dot": 발끝 점 표시, "bbox": bbox + 내부 track id 표시
+DETECTION_OVERLAY_MODE = "dot"  # "dot": 발끝 점 표시, "bbox": bbox + 내부 track id 표시
 POSTPROCESS_IOU_NMS_ENABLED = False    # True면 앱 후처리에서 bbox 중복 제거 추가 적용
 POSTPROCESS_IOU_NMS_THRESHOLD = 0.50   # 후처리 IoU가 이 값보다 크면 낮은 confidence bbox 제거
 

@@ -98,6 +98,19 @@ python3 system/watchdog.py
 3. IMU 센서가 연결되어 있는지 확인 (선택사항)
 4. `SaveVideos/` 디렉토리에 쓰기 권한이 있는지 확인
 
+### 카메라 리소스 강제 해제
+
+프로그램 비정상 종료 후 `/dev/video*` 장치가 다른 프로세스에 잡혀 있어 카메라가 열리지 않으면
+다음 명령으로 설정된 카메라 장치 점유 프로세스를 종료할 수 있습니다.
+
+```bash
+python3 system/release_cameras.py --dry-run --all --stop-app
+python3 system/release_cameras.py --all --stop-app
+python3 system/release_cameras.py --all --stop-app --process-groups --kill
+```
+
+권한 때문에 남는 프로세스가 있으면 `sudo`로 다시 실행하세요.
+
 ## 설정
 
 `config/settings.py`에서 다음 항목을 수정할 수 있습니다:

@@ -378,17 +378,28 @@ def _cleanup(
     """모든 스레드 종료 및 리소스 해제"""
     logger.event_info(EventType.MODULE_STOP, "시스템 종료 프로세스 시작")
 
-    # 1단계: 추론은 즉시 중단, 저장은 종료 신호만 먼저 보냄
-    #   캡처 스레드는 유지 → save_worker가 q 시점부터 post 구간 프레임을 계속 받을 수 있음
+    # 1단계: 종료 요청 즉시 카메라 캡처를 멈춰 장치 점유를 먼저 해제한다.
+    #   save_worker는 큐에 남은 프레임만 정리하고 종료한다.
     inference_stop_event.set()
     save_stop_event.set()
     sensor_stop_event.set()
+    for state in states:
+        state.stop_event.set()
     cv2.destroyAllWindows()
     logger.debug("OpenCV 윈도우 종료")
     buzzer.stop()
 
-    # 2단계: save_worker가 q 시점 기준 post 녹화 + 변환 + 업로드 완료할 때까지 대기
-    logger.debug("save_worker 종료 대기 중 (고정 post 녹화 + 변환 + 업로드)")
+    logger.debug("캡처/추론/센서 스레드 종료 신호 전송")
+    for t in threads:
+        if t.name != "save_worker":
+            t.join(timeout=1.0)
+
+    for i, camera in enumerate(cameras):
+        camera.release()
+        logger.event_info(EventType.CAMERA_CLOSE, f"카메라 {CAMERA_INDICES[i]} 리소스 해제")
+
+    # 2단계: save_worker가 남은 큐 처리 + 변환 + 업로드 완료할 때까지 대기
+    logger.debug("save_worker 종료 대기 중 (남은 프레임 변환 + 업로드)")
     for t in threads:
         if t.name == "save_worker":
             t.join(timeout=EVENT_RECORD_POST_SEC + 60.0)
@@ -407,17 +418,6 @@ def _cleanup(
         except Exception:
             pass
 
-    # 3단계: 저장이 끝난 뒤 캡처/추론/센서 스레드 종료
-    logger.debug("캡처/추론 스레드 종료 신호 전송")
-    for state in states:
-        state.stop_event.set()
-    for t in threads:
-        if t.name != "save_worker":
-            t.join(timeout=1.0)
-
-    for i, camera in enumerate(cameras):
-        camera.release()
-        logger.event_info(EventType.CAMERA_CLOSE, f"카메라 {i} 리소스 해제")
     imu.stop()
     logger.event_info(EventType.SYSTEM_STOP, "Person Detection System 종료 완료")
     try:

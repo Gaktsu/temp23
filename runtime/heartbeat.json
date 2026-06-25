@@ -1,0 +1,134 @@
+{
+  "last_update": "2026-06-25T15:54:58",
+  "last_update_epoch": 1782370498.1043007,
+  "status": "degraded",
+  "camera": {
+    "0": {
+      "camera_index": 0,
+      "running": false,
+      "open": false,
+      "status": "stopped",
+      "frame_seq": 29094,
+      "last_frame_ts": "2026-06-25T15:53:42",
+      "frame_age_sec": 75.279,
+      "last_frame_age": 75.279,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T15:53:42",
+      "detection_age_sec": 75.31,
+      "last_inference_ts": "2026-06-25T15:53:42",
+      "inference_age_sec": 75.31,
+      "last_intrusion_ts": "2026-06-25T15:53:42",
+      "intrusion": false,
+      "last_warning_level": "SAFE",
+      "forklift_speed": 0
+    },
+    "2": {
+      "camera_index": 2,
+      "running": false,
+      "open": false,
+      "status": "stopped",
+      "frame_seq": 29085,
+      "last_frame_ts": "2026-06-25T15:53:42",
+      "frame_age_sec": 75.285,
+      "last_frame_age": 75.285,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T15:53:42",
+      "detection_age_sec": 75.485,
+      "last_inference_ts": "2026-06-25T15:53:42",
+      "inference_age_sec": 75.485,
+      "last_intrusion_ts": "2026-06-25T15:53:32",
+      "intrusion": false,
+      "last_warning_level": "SAFE",
+      "forklift_speed": 0
+    },
+    "4": {
+      "camera_index": 4,
+      "running": false,
+      "open": false,
+      "status": "stopped",
+      "frame_seq": 29081,
+      "last_frame_ts": "2026-06-25T15:53:42",
+      "frame_age_sec": 75.291,
+      "last_frame_age": 75.291,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T15:53:42",
+      "detection_age_sec": 75.356,
+      "last_inference_ts": "2026-06-25T15:53:42",
+      "inference_age_sec": 75.356,
+      "last_intrusion_ts": "2026-06-25T15:53:39",
+      "intrusion": false,
+      "last_warning_level": "SAFE",
+      "forklift_speed": 0
+    },
+    "6": {
+      "camera_index": 6,
+      "running": false,
+      "open": false,
+      "status": "stopped",
+      "frame_seq": 29080,
+      "last_frame_ts": "2026-06-25T15:53:42",
+      "frame_age_sec": 75.269,
+      "last_frame_age": 75.269,
+      "reconnect_attempts": 0,
+      "last_reconnect_result": "not_attempted",
+      "last_reconnect_ts": null,
+      "last_detection_ts": "2026-06-25T15:53:42",
+      "detection_age_sec": 75.433,
+      "last_inference_ts": "2026-06-25T15:53:42",
+      "inference_age_sec": 75.433,
+      "last_intrusion_ts": "2026-06-25T15:53:05",
+      "intrusion": false,
+      "last_warning_level": "SAFE",
+      "forklift_speed": 0
+    }
+  },
+  "ai": {
+    "last_update": "2026-06-25T15:53:42",
+    "last_update_epoch": 1782370422.7939215,
+    "per_camera": {
+      "0": {
+        "last_inference_ts": "2026-06-25T15:53:42",
+        "last_detection_ts": "2026-06-25T15:53:42",
+        "inference_age_sec": 75.31
+      },
+      "2": {
+        "last_inference_ts": "2026-06-25T15:53:42",
+        "last_detection_ts": "2026-06-25T15:53:42",
+        "inference_age_sec": 75.485
+      },
+      "4": {
+        "last_inference_ts": "2026-06-25T15:53:42",
+        "last_detection_ts": "2026-06-25T15:53:42",
+        "inference_age_sec": 75.355
+      },
+      "6": {
+        "last_inference_ts": "2026-06-25T15:53:42",
+        "last_detection_ts": "2026-06-25T15:53:42",
+        "inference_age_sec": 75.433
+      }
+    }
+  },
+  "upload_queue": {
+    "video_queue_size": 512,
+    "event_queue_sizes": {
+      "0": 0,
+      "2": 0,
+      "4": 0,
+      "6": 0
+    },
+    "event_queue_total": 0,
+    "active_uploads": 0,
+    "completed_uploads": 14,
+    "failed_uploads": 0,
+    "last_failure_count": 0,
+    "last_failure_reason": null,
+    "last_failure_file": null,
+    "last_failure_ts": null
+  }
+}

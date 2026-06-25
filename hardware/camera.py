@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import cv2
+import gc
 import time
 import threading
 import platform
@@ -29,6 +30,21 @@ logger = get_logger("hardware.camera")
 # OS 감지
 IS_WINDOWS = platform.system() == "Windows"
 IS_JETSON = platform.system() == "Linux" and platform.machine() in ["aarch64", "arm64"]
+
+
+def _safe_release_capture(cap: Optional[cv2.VideoCapture]) -> None:
+    """OpenCV 캡처 핸들을 예외 없이 해제하고 네이티브 핸들 정리를 유도한다."""
+    if cap is None:
+        return
+    try:
+        cap.release()
+    except Exception:
+        pass
+    try:
+        cv2.waitKey(1)
+    except Exception:
+        pass
+    gc.collect()
 
 
 def diagnose_camera_error(camera_index: int) -> CameraError:
@@ -285,12 +301,12 @@ def open_camera_with_retry(
         print(f"카메라 연결 재시도 중... ({retry_count}/{max_retries})")
 
         time.sleep(retry_delay)
-        cap.release()
+        _safe_release_capture(cap)
         cap = _open_cap(camera_index, width=width, height=height, fps=fps, fourcc=fourcc)
 
     if not cap.isOpened():
         print(f"\n카메라를 열 수 없습니다. {max_retries}번 시도 후 실패했습니다.")
-        cap.release()
+        _safe_release_capture(cap)
         return None
     print("카메라 연결 성공!")
     return cap
@@ -362,10 +378,7 @@ class CameraCapture:
 
             with self.cap_lock:
                 if self.cap is not None:
-                    try:
-                        self.cap.release()
-                    except Exception:
-                        pass
+                    _safe_release_capture(self.cap)
                     self.cap = None
 
             for attempt in range(1, max_retries + 1):
@@ -411,7 +424,7 @@ class CameraCapture:
                         )
                         return True
 
-                cap.release()
+                _safe_release_capture(cap)
                 if attempt < max_retries:
                     time.sleep(retry_delay)
 
@@ -514,7 +527,7 @@ class CameraCapture:
         self.running = False
         with self.cap_lock:
             if self.cap is not None:
-                self.cap.release()
+                _safe_release_capture(self.cap)
                 self.cap = None
 
 
